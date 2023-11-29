@@ -14,7 +14,7 @@
 
 package main
 
-import "./cmd"
+import "go-sync-mongo/cmd"
 
 func main() {
 	cmd.Execute()

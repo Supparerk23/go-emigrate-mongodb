@@ -17,3 +17,7 @@ func (p *Config) Load() error {
 func (p *Config) validate() error {
 	return nil
 }
+
+func (p *Config) sensitiveDb() []string {
+	return []string{"admin","config","local"}
+}

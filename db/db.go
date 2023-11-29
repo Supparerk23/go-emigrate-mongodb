@@ -65,11 +65,16 @@ func NewConnection(config Config) (*Connection, error) {
 	c.dialInfo.Password = c.config.Creds.Password
 	c.dialInfo.Mechanism = c.config.Creds.Mechanism
 
-	//session, err := mgo.DialWithTimeout(c.config.URI, time.Second*3)
+	// session, err := mgo.DialWithTimeout(c.config.URI, time.Second*3)
 	session, err := mgo.DialWithInfo(c.dialInfo)
 	if err != nil {
 		return nil, err
 	}
+
+	// list,_ := session.DatabaseNames()
+	// fmt.Println("DatabaseNames",list)
+	// defer session.Close()
+
 	session.SetSocketTimeout(1 * time.Minute)
 	session.SetPrefetch(1.0)
 
@@ -88,12 +93,24 @@ func (c *Connection) Databases() ([]string, error) {
 
 	var slice []string
 
+	sensitiveList := s.Join(c.config.sensitiveDb()[:], ",")
+
 	for _, dbname := range dbnames {
-		if dbname == c.config.Database {
-			slice = append(slice, dbname)
+
+		if c.config.Database != "" {
+			if dbname == c.config.Database {
+				slice = append(slice, dbname)
+			}
+		}else{
+			if !s.Contains(sensitiveList, dbname) {
+				slice = append(slice, dbname)
+			}
 		}
 	}
+
 	return slice, nil
+
+
 }
 
 func (c *Connection) databaseRegExs() ([]bson.RegEx, error) {
@@ -190,7 +207,7 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 				return fmt.Errorf("server gave error applying ops: %v", applyOpsResponse.ErrMsg)
 			}
 
-			fmt.Println(opCount)
+			fmt.Println(opCount,oplogEntry.Namespace)
 		}
 
 		err = iter.Err()
@@ -259,7 +276,7 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 				return fmt.Errorf("server gave error applying ops: %v", applyOpsResponse.ErrMsg)
 			}
 
-			fmt.Println(opCount)
+			fmt.Println(opCount,oplogEntry.Namespace)
 		}
 
 		err = iter.Err()

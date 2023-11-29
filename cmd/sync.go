@@ -4,7 +4,7 @@ import (
 	"fmt"
 	s "strings"
 
-	db "../db"
+	db "go-sync-mongo/db"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	mgo "gopkg.in/mgo.v2"

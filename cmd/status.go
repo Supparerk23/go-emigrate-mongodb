@@ -5,7 +5,8 @@ import (
 	"os"
 	"strconv"
 
-	db "github.com/checkr/go-sync-mongo/db"
+	// db "github.com/checkr/go-sync-mongo/db"
+	db "go-sync-mongo/db"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -57,36 +58,43 @@ var statusCmd = &cobra.Command{
 		}
 
 		for _, dbname := range dbnames {
-			var (
-				total    int
-				srcTotal int
-				dstTotal int
-			)
 
 			collnames, err := src.Session.DB(dbname).CollectionNames()
 			if err != nil {
 				fmt.Errorf("Error: %s", err)
 			}
-			for _, collname := range collnames {
-				dstColl := dst.Session.DB(dbname).C(collname)
-				var dstLastRecord LastRecord
-				_ = dstColl.Find(nil).Sort("-$natural").Limit(1).One(&dstLastRecord)
 
-				dstQuery := dstColl.Find(bson.M{"_id": bson.M{"$lt": dstLastRecord.ID}})
+			row := []string{dbname,"", "", "", ""}
+			data = append(data, row)
+
+			for _, collname := range collnames {
+
+				var (
+					total    int
+					srcTotal int
+					dstTotal int
+				)
+
+				srcColl := src.Session.DB(dbname).C(collname)
+				var srcLastRecord LastRecord
+				_ = srcColl.Find(nil).Sort("-$natural").Limit(1).One(&srcLastRecord)
+				srcQuery := srcColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
+				total, _ = srcQuery.Count()
+				srcTotal += total
+
+				dstColl := dst.Session.DB(dbname).C(collname)
+				dstQuery := dstColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
 				total, _ = dstQuery.Count()
 				dstTotal += total
 
-				srcColl := src.Session.DB(dbname).C(collname)
-				srcQuery := srcColl.Find(bson.M{"_id": bson.M{"$lt": dstLastRecord.ID}})
-				total, _ = srcQuery.Count()
-				srcTotal += total
+				rowCol := []string{"", collname, strconv.Itoa(srcTotal), strconv.Itoa(dstTotal), strconv.Itoa(srcTotal - dstTotal)}
+				data = append(data, rowCol)
 			}
-			row := []string{dbname, strconv.Itoa(srcTotal), strconv.Itoa(dstTotal), strconv.Itoa(srcTotal - dstTotal)}
-			data = append(data, row)
+
 		}
 
 		table := tablewriter.NewWriter(os.Stdout)
-		table.SetHeader([]string{"DB", "Source", "Destination", "Diff"})
+		table.SetHeader([]string{"DB","Collection", "Source", "Destination", "Diff"})
 
 		for _, v := range data {
 			table.Append(v)
