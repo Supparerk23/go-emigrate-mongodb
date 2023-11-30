@@ -64,11 +64,19 @@ func NewConnection(config Config) (*Connection, error) {
 	c.dialInfo.Username = c.config.Creds.Username
 	c.dialInfo.Password = c.config.Creds.Password
 	c.dialInfo.Mechanism = c.config.Creds.Mechanism
-
+	// c.dialInfo.Direct = true
 	// session, err := mgo.DialWithTimeout(c.config.URI, time.Second*3)
 	session, err := mgo.DialWithInfo(c.dialInfo)
 	if err != nil {
+		fmt.Println("Unable to connect to mongo instance!",c.config.URI)
 		return nil, err
+	}
+
+	fmt.Println("start ping",c.config.URI)
+
+	if pingErr := session.Ping(); pingErr != nil {
+		fmt.Println("pingErr",pingErr)
+		return nil, pingErr
 	}
 
 	// list,_ := session.DatabaseNames()

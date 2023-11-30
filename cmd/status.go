@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 	mgo "gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
+	"log"
 )
 
 type LastRecord struct {
@@ -24,30 +25,63 @@ var statusCmd = &cobra.Command{
 	Short: "Shows all databases and counts of all the records accross collections",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
+
+		srcUrl := viper.GetString("src")
+		if srcUrl == "" {
+			srcUrl = os.Getenv("SOURCE_MONGO_URI")
+		}
+
+		srcUsername := viper.GetString("src-username")
+		if srcUsername == "" {
+			srcUsername = os.Getenv("SOURCE_MONGO_USERNAME")
+		}
+
+		srcPassword := viper.GetString("src-password")
+		if srcPassword == "" {
+			srcPassword = os.Getenv("SOURCE_MONGO_PASSWORD")
+		}
+
 		srcConfig := db.Config{
-			URI: viper.GetString("src"),
+			URI: srcUrl,
 			SSL: viper.GetBool("src-ssl"),
 			Creds: mgo.Credential{
-				Username: viper.GetString("src-username"),
-				Password: viper.GetString("src-password"),
+				Username: srcUsername,
+				Password: srcPassword,
 			},
 		}
+		fmt.Println("srcConfig",srcConfig)
 		src, err := db.NewConnection(srcConfig)
 		if err != nil {
-			fmt.Errorf("Error: %s", err)
+			log.Panic(err)
+		}
+
+		dstUrl := viper.GetString("dst")
+		if dstUrl == "" {
+			dstUrl = os.Getenv("DESTINATION_MONGO_URI")
+		}
+
+		dstUsername := viper.GetString("dst-username")
+		if dstUsername == "" {
+			dstUsername = os.Getenv("DESTINATION_MONGO_USERNAME")
+		}
+
+		dstPassword := viper.GetString("dst-password")
+		if dstPassword == "" {
+			dstPassword = os.Getenv("DESTINATION_MONGO_PASSWORD")
 		}
 
 		dstConfig := db.Config{
-			URI: viper.GetString("dst"),
+			URI: dstUrl,
 			SSL: viper.GetBool("dst-ssl"),
 			Creds: mgo.Credential{
-				Username: viper.GetString("dst-username"),
-				Password: viper.GetString("dst-password"),
+				Username: dstUsername,
+				Password: dstPassword,
 			},
 		}
+		fmt.Println("dstConfig",dstConfig)
 		dst, err := db.NewConnection(dstConfig)
 		if err != nil {
-			fmt.Errorf("Error: %s", err)
+			log.Panic(err)
 		}
 
 		data := [][]string{}
@@ -56,6 +90,9 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			fmt.Errorf("Error: %s", err)
 		}
+		fmt.Println("src dbnames",dbnames)
+		dstdbnames, _ := dst.Databases()
+		fmt.Println("dst dbnames",dstdbnames)
 
 		for _, dbname := range dbnames {
 
@@ -81,8 +118,9 @@ var statusCmd = &cobra.Command{
 				srcQuery := srcColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
 				total, _ = srcQuery.Count()
 				srcTotal += total
-
+				fmt.Println("dbname",dbname,"collname",collname)
 				dstColl := dst.Session.DB(dbname).C(collname)
+				fmt.Println("dstColl",dstColl)
 				dstQuery := dstColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
 				total, _ = dstQuery.Count()
 				dstTotal += total
