@@ -4,20 +4,13 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-
-	// db "github.com/checkr/go-sync-mongo/db"
-	db "go-sync-mongo/db"
+	db "go-emigrate-mongodb/db"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	mgo "gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
 	"log"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/bson"
 )
-
-type LastRecord struct {
-	ID bson.ObjectId `bson:"_id"`
-}
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{
@@ -26,103 +19,74 @@ var statusCmd = &cobra.Command{
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 
-		srcUrl := viper.GetString("src")
-		if srcUrl == "" {
-			srcUrl = os.Getenv("SOURCE_MONGO_URI")
-		}
+		srcConfig := db.SourceConnfLoad()
 
-		srcUsername := viper.GetString("src-username")
-		if srcUsername == "" {
-			srcUsername = os.Getenv("SOURCE_MONGO_USERNAME")
-		}
-
-		srcPassword := viper.GetString("src-password")
-		if srcPassword == "" {
-			srcPassword = os.Getenv("SOURCE_MONGO_PASSWORD")
-		}
-
-		srcConfig := db.Config{
-			URI: srcUrl,
-			SSL: viper.GetBool("src-ssl"),
-			Creds: mgo.Credential{
-				Username: srcUsername,
-				Password: srcPassword,
-			},
-		}
-		fmt.Println("srcConfig",srcConfig)
 		src, err := db.NewConnection(srcConfig)
+		defer src.CloseMongo()
 		if err != nil {
 			log.Panic(err)
 		}
 
-		dstUrl := viper.GetString("dst")
-		if dstUrl == "" {
-			dstUrl = os.Getenv("DESTINATION_MONGO_URI")
-		}
-
-		dstUsername := viper.GetString("dst-username")
-		if dstUsername == "" {
-			dstUsername = os.Getenv("DESTINATION_MONGO_USERNAME")
-		}
-
-		dstPassword := viper.GetString("dst-password")
-		if dstPassword == "" {
-			dstPassword = os.Getenv("DESTINATION_MONGO_PASSWORD")
-		}
-
-		dstConfig := db.Config{
-			URI: dstUrl,
-			SSL: viper.GetBool("dst-ssl"),
-			Creds: mgo.Credential{
-				Username: dstUsername,
-				Password: dstPassword,
-			},
-		}
-		fmt.Println("dstConfig",dstConfig)
+		dstConfig := db.DestinationConfLoad()
+		
 		dst, err := db.NewConnection(dstConfig)
+		defer dst.CloseMongo()
 		if err != nil {
 			log.Panic(err)
 		}
-
+		
 		data := [][]string{}
 
 		dbnames, err := src.Databases()
 		if err != nil {
 			fmt.Errorf("Error: %s", err)
 		}
-		fmt.Println("src dbnames",dbnames)
-		dstdbnames, _ := dst.Databases()
-		fmt.Println("dst dbnames",dstdbnames)
 
 		for _, dbname := range dbnames {
 
-			collnames, err := src.Session.DB(dbname).CollectionNames()
+			collnames, err := src.Collections(dbname)
+
 			if err != nil {
 				fmt.Errorf("Error: %s", err)
+				continue;
 			}
 
 			row := []string{dbname,"", "", "", ""}
 			data = append(data, row)
 
 			for _, collname := range collnames {
+			
 
 				var (
 					total    int
 					srcTotal int
 					dstTotal int
 				)
+				
+				srcLastRecord, err := src.LastRecord(dbname,collname)
+				if err != nil {
+					continue
+				}
 
-				srcColl := src.Session.DB(dbname).C(collname)
-				var srcLastRecord LastRecord
-				_ = srcColl.Find(nil).Sort("-$natural").Limit(1).One(&srcLastRecord)
-				srcQuery := srcColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
-				total, _ = srcQuery.Count()
+				if (srcLastRecord.ID == primitive.ObjectID{}) {
+					continue
+				}
+
+
+				filter := bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}}
+
+				total, err = src.CountRecord(dbname,collname,filter)
+				if err != nil {
+					continue
+				}
+
 				srcTotal += total
-				fmt.Println("dbname",dbname,"collname",collname)
-				dstColl := dst.Session.DB(dbname).C(collname)
-				fmt.Println("dstColl",dstColl)
-				dstQuery := dstColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
-				total, _ = dstQuery.Count()
+		
+				total, err = dst.CountRecord(dbname,collname,filter)
+				if err != nil {
+					continue
+				}
+
 				dstTotal += total
 
 				rowCol := []string{"", collname, strconv.Itoa(srcTotal), strconv.Itoa(dstTotal), strconv.Itoa(srcTotal - dstTotal)}

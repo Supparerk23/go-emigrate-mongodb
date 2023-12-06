@@ -1,6 +1,6 @@
 package main
 
-import "go-sync-mongo/cmd"
+import "go-emigrate-mongodb/cmd"
 
 func main() {
 	cmd.Execute()
