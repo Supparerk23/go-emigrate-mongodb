@@ -33,22 +33,19 @@ func SourceConnfLoad() Config {
 		srcUrl = os.Getenv("SOURCE_MONGO_URI")
 	}
 
-	// srcUsername := viper.GetString("src-username")
-	// if srcUsername == "" {
-	// 	srcUsername = os.Getenv("SOURCE_MONGO_USERNAME")
-	// }
+	collections := []string{}
 
-	// srcPassword := viper.GetString("src-password")
-	// if srcPassword == "" {
-	// 	srcPassword = os.Getenv("SOURCE_MONGO_PASSWORD")
-	// }
+	if viper.GetString("src-collections") != "" {
+		collections = strings.Split(viper.GetString("src-collections"), ",")
+	}
+	
 
 	return Config{
 		DataCenterName : "Source",
 		URI: srcUrl,
 		SSL: viper.GetBool("src-ssl"),
 		Database: viper.GetString("src-db"),
-		Collections: strings.Split(viper.GetString("src-collections"), ","),
+		Collections: collections,
 	}
 }
 
@@ -58,16 +55,6 @@ func DestinationConfLoad() Config {
 	if dstUrl == "" {
 		dstUrl = os.Getenv("DESTINATION_MONGO_URI")
 	}
-
-	// dstUsername := viper.GetString("dst-username")
-	// if dstUsername == "" {
-	// 	dstUsername = os.Getenv("DESTINATION_MONGO_USERNAME")
-	// }
-
-	// dstPassword := viper.GetString("dst-password")
-	// if dstPassword == "" {
-	// 	dstPassword = os.Getenv("DESTINATION_MONGO_PASSWORD")
-	// }
 
 	return Config{
 		DataCenterName : "Destination",

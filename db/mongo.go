@@ -3,22 +3,21 @@ package db
 import (
 	"context"
 	"time"
-	// "os"
 	"log"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	// "go.mongodb.org/mongo-driver/mongo/readconcern"
-	// "go.mongodb.org/mongo-driver/mongo/readpref"
-	// "strconv"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"fmt"
 	"strings"
+	"github.com/spf13/viper"
 )
 
 var maxBatchSizeDefault int = 100000
 
-var mongoCtxTimeOut = 600
+var mongoCtxTimeOut = 60
 
 type Connection struct {
 	Config    Config
@@ -31,6 +30,22 @@ type Connection struct {
 	// NDone     uint64
 	ContextTimeOut time.Duration
 }
+
+type ApplyOpsResponse struct {
+	Ok     bool   `bson:"ok"`
+	ErrMsg string `bson:"errmsg"`
+}
+
+type Oplog struct {
+	Timestamp primitive.Timestamp `bson:"ts"`
+	HistoryID int64               `bson:"h"`
+	Version   int                 `bson:"v"`
+	Operation string              `bson:"op"`
+	Namespace string              `bson:"ns"`
+	Object    bson.D              `bson:"o"`
+	Query     bson.D              `bson:"o2"`
+}
+
 
 type LastRecord struct {
 	ID primitive.ObjectID `bson:"_id"`
@@ -199,83 +214,278 @@ func (c *Connection) CountRecord(dbname string, collection_name string, filter i
 
 }
 
-// func (c *Connection) Find(dbname string, collection_name string, filter interface{}, opts *options.FindOptions) (interface{}, error){
+func (c *Connection) DatabaseRegExs() ([]primitive.Regex, error) {
 
-// 	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
-// 	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
+	defer cancel()
 
-// 	col, err := c.Client.Database(dbname).Collection(collection_name)
+	dbnames, _ := c.Client.ListDatabaseNames(ctx,bson.D{})
 
-// 	if err != nil {
-// 		log.Panicf("Error Collection: %v", err)
-// 		return interface{}, err
-// 	}
+	var slice []primitive.Regex
+
+	for _, dbname := range dbnames {
+		if dbname == c.Config.Database {
+			slice = append(slice, primitive.Regex{Pattern: dbname + ".*", Options: ""})
+			// slice = append(slice, primitive.Regex{Pattern: dbname + ".*"})
+		}
+	}
+	return slice, nil
+}
+
+func (c *Connection) SyncOplog(dst *Connection) error {
+
+	var (
+		restore_query bson.M
+		tail_query    bson.M
+		oplogEntry    Oplog
+		iter          *mongo.Cursor
+		sec           primitive.Timestamp
+		// ord           primitive.Timestamp
+		// err           error
+	)
+
+	oplog := c.Client.Database("local").Collection("oplog.rs")
+
+	var head_result struct {
+		Timestamp primitive.Timestamp `bson:"ts"`
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
+	defer cancel()
+
+	opts := options.FindOne().SetSort(bson.D{{"$natural", -1}})
+
+	err := oplog.FindOne(
+		ctx,
+		bson.D{},
+		opts,
+	).Decode(&head_result)
+
+	if err!= nil {
+		return err
+	}
+
+	restore_query = bson.M{
+		"ts": bson.M{"$gt": time.Now().Unix()},
+	}
+
+	tail_query = bson.M{
+		"ts": bson.M{"$gt": head_result.Timestamp},
+	}
+
+	if viper.GetInt("since") > 0 {
+		var sec64 int64
+		sec64 = int64(viper.GetInt("since"))
+		sec = primitive.Timestamp{T: uint32(sec64), I: 0}
+		restore_query["ts"] = bson.M{"$gt": sec}
+	}
+
+	dbnames, _ := c.DatabaseRegExs()
+
+	if len(dbnames) > 0 {
+		restore_query["ns"] = bson.M{"$in": dbnames}
+		tail_query["ns"] = bson.M{"$in": dbnames}
+	} else {
+		return fmt.Errorf("No databases found")
+	}
 
 
-// 	cur, err := col.Find(ctx, bson.D{{}}, findOptions)
-//     if err !=nil {
-//         log.Fatal(err)
-//     }
+	applyOpsResponse := ApplyOpsResponse{}
+	opCount := 0
+
+	if viper.GetInt("since") > 0 {
+		fmt.Println("Restoring oplog...")
+
+		iter, err = oplog.Find(ctx, restore_query)
+
+		if err != nil {
+			fmt.Println("oplog.Find err",err)
+		}
 
 
-// }
+		for iter.Next(ctx) {
 
-// func (c *Connection) Databases() ([]string, error) {
+			if err := iter.Decode(&oplogEntry); err != nil {
+				fmt.Println("iter.Decode err",err)
+				continue
+			}
 
-// 	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
-// 	defer cancel()
+			tail_query = bson.M{
+				"ts": bson.M{"$gte": oplogEntry.Timestamp},
+			}
 
-// 	opts := options.Session().SetDefaultReadConcern(readconcern.Majority())
-// 	sess, err := c.Client.StartSession(opts)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
+			// skip noops
+			if oplogEntry.Operation == "n" {
+				log.Printf("skipping no-op for namespace `%v`", oplogEntry.Namespace)
+				continue
+			}
+			opCount++
 
-// 	defer sess.EndSession(ctx)
+			// apply the operation
+			opsToApply := []Oplog{oplogEntry}
+			//dothis
+			
+			// if oplogEntry.Operation == "u"{
+			// 	// fmt.Println(oplogEntry)
+			// 	// fmt.Println(oplogEntry.Query[0].Key,oplogEntry.Query[0].Value)
 
-// 	txnOpts := options.Transaction().SetReadPreference(readpref.PrimaryPreferred())
+			// 	// if oplogEntry.Query[0].Key == "_id" {
+			// 	// 	oplogEntry.Object[0].Key = oplogEntry.Query[0].Key
+			// 	// 	oplogEntry.Object[0].Value = oplogEntry.Query[0].Value
+			// 	// }
 
-// 	result, err := sess.WithTransaction(ctx, func(ctx mongo.SessionContext) (interface{}, error) {
+			// 	// if oplogEntry.Object[0].Key == "$v" {
+			// 	// 	oplogEntry.Object[0].Value = 2
 
-// 			result, err := c.Client.ListDatabaseNames(
-// 				ctx,
-// 				bson.D{})
-		
-// 			if err != nil {
-// 				fmt.Println("Error ListDatabaseNames")
-// 				return nil, err
-// 			}
+			// 	// 	tmp := oplogEntry.Object[1]
 
-// 			fmt.Println("result in",result)
+			// 	// 	oplogEntry.Object[1].Key = "diff"
+			// 	// 	oplogEntry.Object[1].Value = tmp
+			// 	// }
 
-// 			return result, nil
+			// }
 
-// 	}, txnOpts)
 
-// 	if err != nil {
-// 		log.Panicf("Error mongo sesison: %v", err)
-// 	}
+			opts := options.RunCmd().SetReadPreference(readpref.Primary())
 
-// 	fmt.Println("result out",result)
+			err := dst.Client.Database(dst.Config.Database).RunCommand(ctx, bson.M{"applyOps": opsToApply}, opts).Decode(&applyOpsResponse)
+			if err != nil {
+				
+				if strings.Contains(err.Error(),"Expected _id") {
+					//skip update doc but not have doc error
+					applyOpsResponse.Ok = true
+					fmt.Println(err)
+				}else{
+					return err
+				}
+			}
 
-// 	var dbnames []string
+			// check the server's response for an issue
+			if !applyOpsResponse.Ok {
+				return fmt.Errorf("server gave error applying ops: %v", applyOpsResponse.ErrMsg)
+			}
 
-// 	// sensitiveList := strings.Join(c.Config.sensitiveDb()[:], ",")
+			fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation,oplogEntry.Timestamp)
+		}
+	}
 
-// 	// for _, db := range result {
+	fmt.Println("Tailing.....")
+	// 1 * time.Second
+	optsTail := options.Find().SetMaxAwaitTime(1 * time.Second)
 
-// 	// 	if c.Config.Database != "" {
-// 	// 		if db == c.Config.Database {
-// 	// 			dbnames = append(dbnames, db)
-// 	// 		}
-// 	// 	}else{
-// 	// 		if !strings.Contains(sensitiveList, db) {
-// 	// 			dbnames = append(dbnames, db)
-// 	// 		}
-// 	// 	}
+	iter, err = oplog.Find(
+		ctx,
+		tail_query,
+		optsTail,
+	)
 
-// 	// }
+	for {
 
-// 	return dbnames, nil
+		ctxForever, cancelForever := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
+		defer cancelForever()
 
-// }
+		for iter.Next(context.Background()) {
+
+			if err := iter.Decode(&oplogEntry); err != nil {
+				fmt.Println("iter.Decode err",err)
+				continue
+			}
+
+			if oplogEntry.Operation == "n" {
+				// log.Printf("skipping no-op for namespace `%v`", oplogEntry.Namespace)
+				continue
+			}
+
+			if !strings.Contains(oplogEntry.Namespace, c.Config.Database+".") {
+				// log.Printf("skipping namespace `%v`", oplogEntry.Namespace)
+				continue
+			}
+
+			
+			collection := strings.Split(oplogEntry.Namespace, ".")[1]
+
+			if len(c.Config.Collections) > 0 {
+
+				// check collection against config
+
+				isCollectionMatch := false
+				for _, permittedCollection := range c.Config.Collections {
+					if collection == permittedCollection {
+						isCollectionMatch = true
+					}
+				}
+
+				if !isCollectionMatch {
+					log.Printf("skipping collection `%v`", oplogEntry.Namespace)
+					continue
+				}
+
+			}
+
+			oplogEntry.Namespace = dst.Config.Database + "." + collection
+
+			if false {
+				fmt.Println("\n")
+				fmt.Println("****************************** %v", oplogEntry.HistoryID)
+				fmt.Println("****************************** %v", oplogEntry.Namespace)
+				fmt.Println("****************************** %v", oplogEntry.Object)
+				fmt.Println("****************************** %v", oplogEntry.Operation)
+				fmt.Println("****************************** %v", oplogEntry.Query)
+				fmt.Println("****************************** %v", oplogEntry.Timestamp)
+				fmt.Println("****************************** %v", oplogEntry.Version)
+				fmt.Println("%v", oplogEntry.Namespace)
+			}
+
+			// apply the operation
+			opCount++
+			opsToApply := []Oplog{oplogEntry}
+
+			opts := options.RunCmd().SetReadPreference(readpref.Primary())
+
+			err := dst.Client.Database(dst.Config.Database).RunCommand(ctxForever, bson.M{"applyOps": opsToApply}, opts).Decode(&applyOpsResponse)
+			if err != nil {
+				
+				if strings.Contains(err.Error(),"Expected _id") {
+					//skip update doc but not have doc error
+					applyOpsResponse.Ok = true
+					fmt.Println(err)
+				}else{
+					return err
+				}
+			}
+
+			// check the server's response for an issue
+			if !applyOpsResponse.Ok {
+				return fmt.Errorf("server gave error applying ops: %v", applyOpsResponse.ErrMsg)
+			}
+
+			fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation,oplogEntry.Timestamp)
+
+		}
+
+		if err := iter.Err(); err != nil {
+			fmt.Println("ter.Err",err)
+		}
+
+		if err := iter.Close(ctxForever); err != nil {
+			fmt.Println("iter.Close",err)
+		}
+
+
+		tail_query = bson.M{
+			"ts": bson.M{"$gte": oplogEntry.Timestamp},
+		}
+
+		time.Sleep(5 * time.Second) 
+
+		iter, err = oplog.Find(
+			ctxForever,
+			tail_query,
+			optsTail,
+		)
+
+	}
+
+	return nil
+
+}
