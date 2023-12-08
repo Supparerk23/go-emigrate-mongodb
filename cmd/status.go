@@ -4,19 +4,13 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-
-	// db "github.com/checkr/go-sync-mongo/db"
-	db "go-sync-mongo/db"
+	db "go-emigrate-mongodb/db"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	mgo "gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+	"log"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/bson"
 )
-
-type LastRecord struct {
-	ID bson.ObjectId `bson:"_id"`
-}
 
 // statusCmd represents the status command
 var statusCmd = &cobra.Command{
@@ -24,32 +18,23 @@ var statusCmd = &cobra.Command{
 	Short: "Shows all databases and counts of all the records accross collections",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		srcConfig := db.Config{
-			URI: viper.GetString("src"),
-			SSL: viper.GetBool("src-ssl"),
-			Creds: mgo.Credential{
-				Username: viper.GetString("src-username"),
-				Password: viper.GetString("src-password"),
-			},
-		}
+
+		srcConfig := db.SourceConnfLoad()
+
 		src, err := db.NewConnection(srcConfig)
+		defer src.CloseMongo()
 		if err != nil {
-			fmt.Errorf("Error: %s", err)
+			log.Panic(err)
 		}
 
-		dstConfig := db.Config{
-			URI: viper.GetString("dst"),
-			SSL: viper.GetBool("dst-ssl"),
-			Creds: mgo.Credential{
-				Username: viper.GetString("dst-username"),
-				Password: viper.GetString("dst-password"),
-			},
-		}
+		dstConfig := db.DestinationConfLoad()
+		
 		dst, err := db.NewConnection(dstConfig)
+		defer dst.CloseMongo()
 		if err != nil {
-			fmt.Errorf("Error: %s", err)
+			log.Panic(err)
 		}
-
+		
 		data := [][]string{}
 
 		dbnames, err := src.Databases()
@@ -59,32 +44,49 @@ var statusCmd = &cobra.Command{
 
 		for _, dbname := range dbnames {
 
-			collnames, err := src.Session.DB(dbname).CollectionNames()
+			collnames, err := src.Collections(dbname)
+
 			if err != nil {
 				fmt.Errorf("Error: %s", err)
+				continue;
 			}
 
 			row := []string{dbname,"", "", "", ""}
 			data = append(data, row)
 
 			for _, collname := range collnames {
+			
 
 				var (
 					total    int
 					srcTotal int
 					dstTotal int
 				)
+				
+				srcLastRecord, err := src.LastRecord(dbname,collname)
+				if err != nil {
+					continue
+				}
 
-				srcColl := src.Session.DB(dbname).C(collname)
-				var srcLastRecord LastRecord
-				_ = srcColl.Find(nil).Sort("-$natural").Limit(1).One(&srcLastRecord)
-				srcQuery := srcColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
-				total, _ = srcQuery.Count()
+				if (srcLastRecord.ID == primitive.ObjectID{}) {
+					continue
+				}
+
+
+				filter := bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}}
+
+				total, err = src.CountRecord(dbname,collname,filter)
+				if err != nil {
+					continue
+				}
+
 				srcTotal += total
+		
+				total, err = dst.CountRecord(dbname,collname,filter)
+				if err != nil {
+					continue
+				}
 
-				dstColl := dst.Session.DB(dbname).C(collname)
-				dstQuery := dstColl.Find(bson.M{"_id": bson.M{"$lt": srcLastRecord.ID}})
-				total, _ = dstQuery.Count()
 				dstTotal += total
 
 				rowCol := []string{"", collname, strconv.Itoa(srcTotal), strconv.Itoa(dstTotal), strconv.Itoa(srcTotal - dstTotal)}

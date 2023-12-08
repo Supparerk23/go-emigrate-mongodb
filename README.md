@@ -69,5 +69,13 @@ $ go run main.go status --src "mongodb://localhost:27018" --src-username mongoop
 +--------+--------+-------------+------+
 ```
 
+```
+$ go run main.go status
+```
+
+```
+$ go run main.go sync
+```
+
 ### Releases
 You can download binary releases for linux, macos and windows [here](https://github.com/checkr/go-sync-mongo/releases)
