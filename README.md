@@ -77,5 +77,6 @@ $ go run main.go status
 $ go run main.go sync
 ```
 
-### Releases
-You can download binary releases for linux, macos and windows [here](https://github.com/checkr/go-sync-mongo/releases)
+```
+$go run main.go sync --since {{timestamp}} --src-db {{database_name}} --src-collections {{collection_name}} --dst-db {{database_name}} --dst-collections {{collection_name}}
+```
