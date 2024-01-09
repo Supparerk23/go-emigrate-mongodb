@@ -8,7 +8,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	// "go.mongodb.org/mongo-driver/mongo/readconcern"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"fmt"
 	"strings"
@@ -22,12 +21,6 @@ var mongoCtxTimeOut = 60
 type Connection struct {
 	Config    Config
 	Client *mongo.Client
-	// Session mongo.Session
-	// OplogChan chan bson.M
-	// Mutex     sync.Mutex
-	// Optime    bson.MongoTimestamp
-	// NOplog    uint64
-	// NDone     uint64
 	ContextTimeOut time.Duration
 }
 
@@ -57,17 +50,9 @@ func NewConnection(config Config) (*Connection, error){
 	c.Config = config
 	c.ContextTimeOut = time.Duration(mongoCtxTimeOut)
 
-	// rp := readpref.Primary()
-
-	// cliWC := &writeconcern.WriteConcern{
-	//     W: 2,
-	//     Journal: &journal,
-	// }
-
 	var err error
 	clientOptions := options.Client().ApplyURI(config.URI)
-	// .SetReadPreference(readpref.PrimaryPreferred())
-	// .SetWriteConcern(cliWC)
+
 	clientOptions = clientOptions.SetMaxPoolSize(100)
 	clientOptions = clientOptions.SetMaxConnIdleTime(60 * time.Second)
 
@@ -91,18 +76,6 @@ func NewConnection(config Config) (*Connection, error){
         return nil, err
     }
 
-    // var session mongo.Session
-
-	// if session, err = mongoClient.StartSession(); err != nil {
-	// 	log.Panicf("Error start session: %v", err)
-	// }
-
-	// if err = session.StartTransaction(); err != nil {
-	//     log.Panicf("Error start transaction",err)
-	// }
-
-	// c.Session = session
-
     log.Println(fmt.Sprintf("[[INFO] Mongo %s init done",config.DataCenterName))
  
     return c, err
@@ -111,9 +84,6 @@ func NewConnection(config Config) (*Connection, error){
 func (c *Connection) CloseMongo() {
 	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
 	defer cancel()
-
-	// c.Session.EndSession(ctx)
-	// log.Println( fmt.Sprintf("[INFO] Mongo %s close session",c.Config.DataCenterName) )
 
 	c.Client.Disconnect(ctx)
 	log.Println( fmt.Sprintf("[INFO] Mongo %s close connection",c.Config.DataCenterName) )
@@ -232,6 +202,56 @@ func (c *Connection) DatabaseRegExs() ([]primitive.Regex, error) {
 	return slice, nil
 }
 
+func (c *Connection) UpdateSyncData(opCount int, dst *Connection, oplogEntry Oplog) error {
+
+	namespace := strings.Split(oplogEntry.Namespace, ".")
+
+	database := namespace[0]
+	collection := namespace[1]
+
+	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
+	defer cancel()
+
+	srcColl := c.Client.Database(database).Collection(collection)
+
+	for _, Query := range oplogEntry.Query {
+		
+		if Query.Key == "_id" {
+			targetId := Query.Value
+
+			var value interface{}
+
+			err := srcColl.FindOne(ctx, bson.M{"_id": targetId}).Decode(&value)
+			if err != nil {
+    			fmt.Println("Error retrieving document id : " , targetId)
+    			return err
+			}
+
+			filter := bson.M{"_id": targetId}
+			update := bson.M{"$set": value }
+			
+			dstColl := dst.Client.Database(database).Collection(collection)
+			_, err = dstColl.UpdateOne(
+		        ctx,
+		        filter,
+		        update,
+		    )
+
+		    if err != nil {
+		    	fmt.Println("UPDATE Error : " , targetId)
+		    	return err
+		    }
+
+		    fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation)
+
+		}
+		
+	}
+			
+
+	return nil
+}
+
 func (c *Connection) SyncOplog(dst *Connection) error {
 
 	var (
@@ -240,8 +260,6 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 		oplogEntry    Oplog
 		iter          *mongo.Cursor
 		sec           primitive.Timestamp
-		// ord           primitive.Timestamp
-		// err           error
 	)
 
 	oplog := c.Client.Database("local").Collection("oplog.rs")
@@ -250,6 +268,7 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 		Timestamp primitive.Timestamp `bson:"ts"`
 	}
 
+	// ctx := context.Background()
 	ctx, cancel := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
 	defer cancel()
 
@@ -316,36 +335,20 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 
 			// skip noops
 			if oplogEntry.Operation == "n" {
-				log.Printf("skipping no-op for namespace `%v`", oplogEntry.Namespace)
+				// log.Printf("skipping no-op for namespace `%v`", oplogEntry.Namespace)
 				continue
 			}
-			opCount++
 
 			// apply the operation
+			opCount++
+
+			if oplogEntry.Operation == "u"{
+				c.UpdateSyncData(opCount,dst,oplogEntry)
+				continue
+			}
+
 			opsToApply := []Oplog{oplogEntry}
-			//dothis
 			
-			// if oplogEntry.Operation == "u"{
-			// 	// fmt.Println(oplogEntry)
-			// 	// fmt.Println(oplogEntry.Query[0].Key,oplogEntry.Query[0].Value)
-
-			// 	// if oplogEntry.Query[0].Key == "_id" {
-			// 	// 	oplogEntry.Object[0].Key = oplogEntry.Query[0].Key
-			// 	// 	oplogEntry.Object[0].Value = oplogEntry.Query[0].Value
-			// 	// }
-
-			// 	// if oplogEntry.Object[0].Key == "$v" {
-			// 	// 	oplogEntry.Object[0].Value = 2
-
-			// 	// 	tmp := oplogEntry.Object[1]
-
-			// 	// 	oplogEntry.Object[1].Key = "diff"
-			// 	// 	oplogEntry.Object[1].Value = tmp
-			// 	// }
-
-			// }
-
-
 			opts := options.RunCmd().SetReadPreference(readpref.Primary())
 
 			err := dst.Client.Database(dst.Config.Database).RunCommand(ctx, bson.M{"applyOps": opsToApply}, opts).Decode(&applyOpsResponse)
@@ -365,24 +368,23 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 				return fmt.Errorf("server gave error applying ops: %v", applyOpsResponse.ErrMsg)
 			}
 
-			fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation,oplogEntry.Timestamp)
+			fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation)
 		}
 	}
 
 	fmt.Println("Tailing.....")
-	// 1 * time.Second
-	optsTail := options.Find().SetMaxAwaitTime(1 * time.Second)
+	// .SetMaxAwaitTime(1 * time.Second)
+	optsTail := options.Find().SetMaxAwaitTime(0)
 
 	iter, err = oplog.Find(
-		ctx,
+		context.Background(),
 		tail_query,
 		optsTail,
 	)
 
 	for {
 
-		ctxForever, cancelForever := context.WithTimeout(context.Background(), c.ContextTimeOut*time.Second)
-		defer cancelForever()
+		ctxForever := context.Background()
 
 		for iter.Next(context.Background()) {
 
@@ -416,7 +418,7 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 				}
 
 				if !isCollectionMatch {
-					log.Printf("skipping collection `%v`", oplogEntry.Namespace)
+					// log.Printf("skipping collection `%v`", oplogEntry.Namespace)
 					continue
 				}
 
@@ -438,6 +440,12 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 
 			// apply the operation
 			opCount++
+
+			if oplogEntry.Operation == "u"{
+				c.UpdateSyncData(opCount,dst,oplogEntry)
+				continue
+			}
+
 			opsToApply := []Oplog{oplogEntry}
 
 			opts := options.RunCmd().SetReadPreference(readpref.Primary())
@@ -459,7 +467,7 @@ func (c *Connection) SyncOplog(dst *Connection) error {
 				return fmt.Errorf("server gave error applying ops: %v", applyOpsResponse.ErrMsg)
 			}
 
-			fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation,oplogEntry.Timestamp)
+			fmt.Println(opCount,oplogEntry.Namespace,oplogEntry.Operation)
 
 		}
 
